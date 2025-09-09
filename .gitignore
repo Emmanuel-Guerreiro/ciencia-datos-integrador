@@ -1,1 +1,48 @@
 */.venv
+
+# Variables de entorno y archivos sensibles
+.env
+*.env
+.env.local
+.env.production
+.env.staging
+
+# API Keys y configuraciones sensibles
+config/secrets.yaml
+config/api_keys.json
+**/api_keys.txt
+**/secrets.txt
+
+# Archivos temporales de Airflow
+logs/
+airflow.db
+airflow.cfg
+webserver_config.py
+
+# Datos procesados temporalmente
+/tmp/
+**/tmp/
+data/processed/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db

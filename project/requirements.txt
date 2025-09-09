@@ -1,2 +1,14 @@
 # Astro Runtime includes the following pre-installed providers packages: https://www.astronomer.io/docs/astro/runtime-image-architecture#provider-packages
-pandas
+
+# Data processing
+pandas>=2.0.0
+numpy>=1.24.0
+
+# Google Cloud Language API for text moderation
+google-cloud-language>=2.9.0
+
+# Date and time handling (usually included with Python but explicit for clarity)
+python-dateutil>=2.8.0
+
+# Regex support (usually included with Python)
+regex>=2023.0.0
