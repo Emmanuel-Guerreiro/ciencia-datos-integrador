@@ -273,6 +273,7 @@ def add_btc_price_data(**kwargs):
     btc_df['close_time'] = pd.to_datetime(btc_df['close_time'])
     
     # Inicializar columnas para precios BTC
+    trump_df['btc_price_at_tweet'] = None
     trump_df['btc_24h_after'] = None
     trump_df['btc_48h_after'] = None
     
@@ -281,9 +282,16 @@ def add_btc_price_data(**kwargs):
         tweet_date = row['date']
         tweet_day = tweet_date.date()
         
-        # Calcular fechas objetivo (1 y 2 días después del tweet)
+        # Calcular fechas objetivo (día del tweet, 1 y 2 días después)
+        target_tweet_day = tweet_day
         target_24h_day = tweet_day + pd.Timedelta(days=1)
         target_48h_day = tweet_day + pd.Timedelta(days=2)
+        
+        # Buscar precio BTC al momento del tweet (mismo día)
+        btc_tweet_mask = btc_df['close_time'].dt.date == target_tweet_day
+        if btc_tweet_mask.any():
+            closest_tweet_idx = btc_df[btc_tweet_mask].index[0]
+            trump_df.at[idx, 'btc_price_at_tweet'] = btc_df.at[closest_tweet_idx, 'close']
         
         # Buscar precio BTC 24h después
         btc_24h_mask = btc_df['close_time'].dt.date == target_24h_day
@@ -297,9 +305,112 @@ def add_btc_price_data(**kwargs):
             closest_48h_idx = btc_df[btc_48h_mask].index[0]
             trump_df.at[idx, 'btc_48h_after'] = btc_df.at[closest_48h_idx, 'close']
     
+    # Calcular cambios porcentuales
+    trump_df['btc_change_24h_pct'] = None
+    trump_df['btc_change_48h_pct'] = None
+    
+    # Calcular cambios porcentuales donde hay datos disponibles
+    mask_24h = (trump_df['btc_price_at_tweet'].notna()) & (trump_df['btc_24h_after'].notna())
+    trump_df.loc[mask_24h, 'btc_change_24h_pct'] = (
+        (trump_df.loc[mask_24h, 'btc_24h_after'] - trump_df.loc[mask_24h, 'btc_price_at_tweet']) / 
+        trump_df.loc[mask_24h, 'btc_price_at_tweet'] * 100
+    )
+    
+    mask_48h = (trump_df['btc_price_at_tweet'].notna()) & (trump_df['btc_48h_after'].notna())
+    trump_df.loc[mask_48h, 'btc_change_48h_pct'] = (
+        (trump_df.loc[mask_48h, 'btc_48h_after'] - trump_df.loc[mask_48h, 'btc_price_at_tweet']) / 
+        trump_df.loc[mask_48h, 'btc_price_at_tweet'] * 100
+    )
+    
+    # Calcular métricas de significancia estadística
+    logging.info("Calculando métricas de significancia...")
+    
+    # 1. Calcular volatilidad histórica (desviación estándar de cambios diarios)
+    btc_daily_returns = btc_df['close'].pct_change().dropna() * 100
+    historical_volatility = btc_daily_returns.std()
+    historical_mean = btc_daily_returns.mean()
+    
+    logging.info(f"Volatilidad histórica diaria de BTC: {historical_volatility:.2f}%")
+    logging.info(f"Cambio promedio histórico diario: {historical_mean:.2f}%")
+    
+    # 2. Calcular Z-scores para determinar qué tan inusuales son los cambios
+    trump_df['btc_24h_zscore'] = None
+    trump_df['btc_48h_zscore'] = None
+    trump_df['btc_24h_significance'] = None
+    trump_df['btc_48h_significance'] = None
+    
+    # Z-score para cambios de 24h
+    mask_24h_valid = trump_df['btc_change_24h_pct'].notna()
+    if mask_24h_valid.any():
+        trump_df.loc[mask_24h_valid, 'btc_24h_zscore'] = (
+            (trump_df.loc[mask_24h_valid, 'btc_change_24h_pct'] - historical_mean) / historical_volatility
+        )
+        
+        # Clasificar significancia basada en Z-score
+        trump_df.loc[mask_24h_valid, 'btc_24h_significance'] = trump_df.loc[mask_24h_valid, 'btc_24h_zscore'].apply(
+            lambda z: 'muy_significativo' if abs(z) > 2.5 else
+                     'significativo' if abs(z) > 1.96 else
+                     'moderado' if abs(z) > 1.0 else
+                     'normal'
+        )
+    
+    # Z-score para cambios de 48h (usando volatilidad ajustada para 2 días)
+    volatility_48h = historical_volatility * (2**0.5)  # Ajuste para 48h
+    mask_48h_valid = trump_df['btc_change_48h_pct'].notna()
+    if mask_48h_valid.any():
+        trump_df.loc[mask_48h_valid, 'btc_48h_zscore'] = (
+            (trump_df.loc[mask_48h_valid, 'btc_change_48h_pct'] - historical_mean * 2) / volatility_48h
+        )
+        
+        trump_df.loc[mask_48h_valid, 'btc_48h_significance'] = trump_df.loc[mask_48h_valid, 'btc_48h_zscore'].apply(
+            lambda z: 'muy_significativo' if abs(z) > 2.5 else
+                     'significativo' if abs(z) > 1.96 else
+                     'moderado' if abs(z) > 1.0 else
+                     'normal'
+        )
+    
+    # 3. Calcular percentiles para contexto relativo
+    trump_df['btc_24h_percentile'] = None
+    trump_df['btc_48h_percentile'] = None
+    
+    if mask_24h_valid.any():
+        # Percentil basado en la distribución histórica
+        trump_df.loc[mask_24h_valid, 'btc_24h_percentile'] = trump_df.loc[mask_24h_valid, 'btc_change_24h_pct'].apply(
+            lambda x: (btc_daily_returns <= x).mean() * 100
+        )
+    
+    if mask_48h_valid.any():
+        # Para 48h, usar distribución de cambios de 2 días
+        btc_2day_returns = btc_df['close'].pct_change(periods=2).dropna() * 100
+        trump_df.loc[mask_48h_valid, 'btc_48h_percentile'] = trump_df.loc[mask_48h_valid, 'btc_change_48h_pct'].apply(
+            lambda x: (btc_2day_returns <= x).mean() * 100
+        )
+    
+    # 4. Agregar contexto de magnitud absoluta
+    trump_df['btc_24h_magnitude'] = None
+    trump_df['btc_48h_magnitude'] = None
+    
+    if mask_24h_valid.any():
+        trump_df.loc[mask_24h_valid, 'btc_24h_magnitude'] = trump_df.loc[mask_24h_valid, 'btc_change_24h_pct'].abs().apply(
+            lambda x: 'extremo' if x > 10 else
+                     'alto' if x > 5 else
+                     'medio' if x > 2 else
+                     'bajo'
+        )
+    
+    if mask_48h_valid.any():
+        trump_df.loc[mask_48h_valid, 'btc_48h_magnitude'] = trump_df.loc[mask_48h_valid, 'btc_change_48h_pct'].abs().apply(
+            lambda x: 'extremo' if x > 15 else
+                     'alto' if x > 8 else
+                     'medio' if x > 3 else
+                     'bajo'
+        )
+    
     # Filtrar tweets que tienen datos de BTC disponibles
     btc_data_available = trump_df[
-        (trump_df['btc_24h_after'].notna()) | (trump_df['btc_48h_after'].notna())
+        (trump_df['btc_price_at_tweet'].notna()) | 
+        (trump_df['btc_24h_after'].notna()) | 
+        (trump_df['btc_48h_after'].notna())
     ].copy()
     
     logging.info(f"Dataset final: {len(btc_data_available)} tweets con datos BTC disponibles")
@@ -330,8 +441,48 @@ def save_final_dataset(**kwargs):
     logging.info("Estadísticas del dataset final:")
     logging.info(f"- Tweets totales: {len(final_df)}")
     logging.info(f"- Rango de fechas: {final_df['date'].min()} a {final_df['date'].max()}")
-    logging.info(f"- Tweets con precio BTC 24h: {final_df['btc_24h_after'].notna().sum()}")
-    logging.info(f"- Tweets con precio BTC 48h: {final_df['btc_48h_after'].notna().sum()}")
+    logging.info(f"- Tweets con precio BTC al momento: {final_df['btc_price_at_tweet'].notna().sum()}")
+    logging.info(f"- Tweets con precio BTC 24h después: {final_df['btc_24h_after'].notna().sum()}")
+    logging.info(f"- Tweets con precio BTC 48h después: {final_df['btc_48h_after'].notna().sum()}")
+    
+    # Estadísticas de cambios porcentuales
+    if 'btc_change_24h_pct' in final_df.columns:
+        changes_24h = final_df['btc_change_24h_pct'].dropna()
+        if len(changes_24h) > 0:
+            logging.info(f"- Cambio promedio BTC 24h: {changes_24h.mean():.2f}%")
+            logging.info(f"- Cambio máximo BTC 24h: {changes_24h.max():.2f}%")
+            logging.info(f"- Cambio mínimo BTC 24h: {changes_24h.min():.2f}%")
+    
+    if 'btc_change_48h_pct' in final_df.columns:
+        changes_48h = final_df['btc_change_48h_pct'].dropna()
+        if len(changes_48h) > 0:
+            logging.info(f"- Cambio promedio BTC 48h: {changes_48h.mean():.2f}%")
+            logging.info(f"- Cambio máximo BTC 48h: {changes_48h.max():.2f}%")
+            logging.info(f"- Cambio mínimo BTC 48h: {changes_48h.min():.2f}%")
+    
+    # Estadísticas de significancia
+    if 'btc_24h_significance' in final_df.columns:
+        sig_counts_24h = final_df['btc_24h_significance'].value_counts()
+        logging.info("- Distribución de significancia 24h:")
+        for sig_level, count in sig_counts_24h.items():
+            logging.info(f"  * {sig_level}: {count} tweets ({count/len(final_df)*100:.1f}%)")
+    
+    if 'btc_48h_significance' in final_df.columns:
+        sig_counts_48h = final_df['btc_48h_significance'].value_counts()
+        logging.info("- Distribución de significancia 48h:")
+        for sig_level, count in sig_counts_48h.items():
+            logging.info(f"  * {sig_level}: {count} tweets ({count/len(final_df)*100:.1f}%)")
+    
+    # Tweets con cambios más significativos
+    if 'btc_24h_zscore' in final_df.columns:
+        extreme_24h = final_df[final_df['btc_24h_zscore'].abs() > 2.5]
+        if len(extreme_24h) > 0:
+            logging.info(f"- Tweets con cambios muy significativos (24h): {len(extreme_24h)}")
+    
+    if 'btc_48h_zscore' in final_df.columns:
+        extreme_48h = final_df[final_df['btc_48h_zscore'].abs() > 2.5]
+        if len(extreme_48h) > 0:
+            logging.info(f"- Tweets con cambios muy significativos (48h): {len(extreme_48h)}")
 
 
 # DAG
