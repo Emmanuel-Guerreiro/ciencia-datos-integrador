@@ -317,7 +317,7 @@ def save_final_dataset(**kwargs):
     final_df = pd.read_csv(TMP_MERGED_DATA_PATH)
     
     # Definir ruta de salida
-    output_path = '/opt/airflow/dags/../data/processed/trump_btc_analysis_dataset.csv'
+    output_path = '/tmp/output/trump_btc_analysis_dataset.csv'
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
     
     # Guardar dataset final
